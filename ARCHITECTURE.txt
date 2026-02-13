@@ -1,0 +1,170 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       gptel-workflow Architecture                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                         USER INTERACTION
+                               │
+                ┌──────────────┴──────────────┐
+                │                             │
+         Interactive UI              Programmatic API
+                │                             │
+    ┌───────────┴─────────┐         ┌────────┴────────┐
+    │   Entry Transient   │         │  Function Calls  │
+    │  - Context source   │         │  - start()       │
+    │  - ACs entry        │         │  - run_plan()    │
+    │  - Integration flag │         │  - run_diff()    │
+    │  - Step selection   │         │  - run_tests()   │
+    └───────────┬─────────┘         └────────┬────────┘
+                │                             │
+                └──────────────┬──────────────┘
+                               │
+                       ┌───────▼──────────┐
+                       │  Workflow State  │
+                       │  ┌─────────────┐ │
+                       │  │ current-step│ │
+                       │  │ acs         │ │
+                       │  │ context-raw │ │
+                       │  │ plan        │ │
+                       │  │ diff        │ │
+                       │  │ tests       │ │
+                       │  │ review      │ │
+                       │  │ retry-count │ │
+                       │  └─────────────┘ │
+                       └───────┬──────────┘
+                               │
+            ┌──────────────────┼──────────────────┐
+            │                  │                  │
+     ┌──────▼───────┐  ┌──────▼───────┐  ┌──────▼───────┐
+     │   Context    │  │    Step      │  │  Validation  │
+     │  Management  │  │  Execution   │  │    Gates     │
+     └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+            │                  │                  │
+    ┌───────┴──────┐   ┌──────┴──────┐   ┌──────┴───────┐
+    │ - region     │   │ Presets:    │   │ Validators:  │
+    │ - defun      │   │  fast-low   │   │  - plan      │
+    │ - pruning    │   │  strong-med │   │  - diff      │
+    │ - summarize  │   │  strong-low │   │  - tests     │
+    └──────────────┘   └──────┬──────┘   │  - review    │
+                              │           └──────┬───────┘
+                              │                  │
+                       ┌──────▼──────────────────▼─────┐
+                       │       gptel-request           │
+                       │    (async with callback)      │
+                       └──────┬───────────────────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │                   │
+           ┌────────▼────────┐  ┌──────▼──────┐
+           │  Output Buffer  │  │ Log Buffer  │
+           │  - Plan         │  │ - Timestamp │
+           │  - Diff         │  │ - Step      │
+           │  - Tests        │  │ - Preset    │
+           │  - Review       │  │ - Status    │
+           │  - Validation   │  └─────────────┘
+           └─────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                            WORKFLOW STEPS
+═══════════════════════════════════════════════════════════════════════════════
+
+  1. PLAN           → [strong-medium]  → Validate: bullets + AC citations
+     │
+     ▼
+  2. DIFF           → [strong-low]     → Validate: unified diff + ACs
+     │
+     ▼
+  3. TESTS          → [strong-low]     → Validate: test paths + ACs
+     │  (unit or integration)
+     ▼
+  4. REVIEW         → [strong-low]     → Validate: bullets present
+     │
+     ▼
+  5. CHECKLIST      → [strong-low]     → Display: verification steps
+
+  Each step:
+  • Builds prompt from state + ACs
+  • Executes with appropriate preset
+  • Validates output
+  • Updates state
+  • Logs execution
+  • Displays in output buffer
+  • Calls callback (if provided)
+
+═══════════════════════════════════════════════════════════════════════════════
+                         DATA FLOW EXAMPLE
+═══════════════════════════════════════════════════════════════════════════════
+
+  User selects region with code
+         │
+         ▼
+  gptel-workflow-start('region, ["AC1", "AC2"], false)
+         │
+         ├─► Capture region text
+         ├─► Prune context (remove blank lines, truncate long lines)
+         ├─► Create workflow state
+         └─► Tag ACs → "AC1: ...", "AC2: ..."
+         │
+         ▼
+  gptel-workflow-run-plan()
+         │
+         ├─► Build prompt: context + ACs
+         ├─► Execute with strong-medium preset
+         ├─► Receive response (async callback)
+         ├─► Validate: has bullets? cites AC1, AC2?
+         ├─► Store in state.plan
+         ├─► Display in output buffer
+         └─► Log: [timestamp] plan | strong-medium | default | success
+         │
+         ▼
+  gptel-workflow-run-diff()
+         │
+         ├─► Build prompt: plan + context + ACs
+         ├─► Execute with strong-low preset
+         ├─► Validate: unified diff format? cites ACs?
+         ├─► Store in state.diff
+         └─► Display + log
+         │
+         ▼
+  [Continue through tests → review → checklist]
+
+═══════════════════════════════════════════════════════════════════════════════
+                          KEY FEATURES
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ ASYNC EXECUTION      - Non-blocking gptel-request with callbacks
+✓ STATE MANAGEMENT     - Comprehensive cl-defstruct state tracking
+✓ VALIDATION GATES     - Pluggable validators per step
+✓ AC PROPAGATION       - Auto-tagged ACs in all prompts
+✓ CONTEXT HYGIENE      - Pruning + optional summarization
+✓ RETRY SUPPORT        - Retry current step with alt presets
+✓ TRANSIENT UI         - Entry + per-step menus
+✓ LOGGING              - Timestamped execution logs
+✓ MOCK SUPPORT         - Tests without gptel loaded
+✓ EXTENSIBLE           - Custom steps, validators, presets
+
+═══════════════════════════════════════════════════════════════════════════════
+                        USAGE PATTERNS
+═══════════════════════════════════════════════════════════════════════════════
+
+1. INTERACTIVE
+   M-x gptel-workflow-menu
+   → Configure options
+   → Select step or run all
+
+2. PROGRAMMATIC
+   (gptel-workflow-start 'region '("AC1") nil)
+   (gptel-workflow-run-all)
+
+3. CUSTOM CALLBACK
+   (gptel-workflow-run-plan
+     (lambda (validation)
+       (if (plist-get validation :valid)
+           (my-custom-handler)
+         (gptel-workflow-retry-step))))
+
+4. STATE INSPECTION
+   (let ((state (gptel-workflow-get-state)))
+     (gptel-workflow-state-plan state))
+
+═══════════════════════════════════════════════════════════════════════════════
