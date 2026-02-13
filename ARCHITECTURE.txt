@@ -1,0 +1,203 @@
+                    gptel-workflow Architecture
+                    ============================
+
+┌─────────────────────────────────────────────────────────────────┐
+│                         USER INTERFACE                           │
+├─────────────────────────────────────────────────────────────────┤
+│  gptel-workflow-menu (Transient)                                │
+│    ├─ Start/Reset workflow                                       │
+│    ├─ Run steps (plan/diff/tests/review/checklist)              │
+│    └─ Utilities (retry/show output/show log)                    │
+│                                                                   │
+│  gptel-workflow-step-menu (Transient)                           │
+│    ├─ Navigate (next/previous step)                             │
+│    ├─ Actions (retry/edit ACs/continue)                         │
+│    └─ View (output/log)                                          │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                      WORKFLOW ORCHESTRATION                      │
+├─────────────────────────────────────────────────────────────────┤
+│  gptel-workflow-state                                            │
+│    ├─ current-step                                               │
+│    ├─ acs / acs-tagged (AC1, AC2, ...)                          │
+│    ├─ context / context-summary                                  │
+│    ├─ plan / diff / tests / review / checklist                   │
+│    ├─ continue / integration-tests-flag                          │
+│    └─ preset-overrides / retry-count                             │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                        WORKFLOW STEPS                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  1. PLAN                                                         │
+│     Preset: strong-medium (gpt-4, temp=0.7)                     │
+│     Input: ACs + Context                                         │
+│     Output: Bulleted plan                                        │
+│     Validation: ✓ bullets ✓ AC citations                        │
+│                         ↓                                         │
+│  2. DIFF                                                         │
+│     Preset: strong-low (gpt-4, temp=0.3)                        │
+│     Input: Plan + ACs + Context                                  │
+│     Output: Unified diff                                         │
+│     Validation: ✓ unified format ✓ AC citations                 │
+│                         ↓                                         │
+│  3. TESTS                                                        │
+│     Preset: strong-low (gpt-4, temp=0.3)                        │
+│     Input: Diff + ACs + Context                                  │
+│     Output: Test diffs                                           │
+│     Validation: ✓ test paths                                     │
+│                         ↓                                         │
+│  [3.5 INTEGRATION TESTS - Optional]                             │
+│     Preset: strong-low (gpt-4, temp=0.3)                        │
+│     Input: Diff + ACs + Context                                  │
+│     Output: Integration test diffs                               │
+│     Validation: ✓ test paths                                     │
+│                         ↓                                         │
+│  4. REVIEW                                                       │
+│     Preset: strong-low (gpt-4, temp=0.3)                        │
+│     Input: Diff + Tests + ACs                                    │
+│     Output: Bulleted review (risks/missing/alternatives)         │
+│     Validation: ✓ bullets                                        │
+│                         ↓                                         │
+│  5. CHECKLIST                                                    │
+│     Preset: strong-low (gpt-4, temp=0.3)                        │
+│     Input: Plan + Review + ACs                                   │
+│     Output: Markdown checklist                                   │
+│     Validation: None (final step)                                │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     VALIDATION GATES                             │
+├─────────────────────────────────────────────────────────────────┤
+│  gptel-workflow--validate-plan                                   │
+│    → Check: bullets present, AC IDs cited                        │
+│                                                                   │
+│  gptel-workflow--validate-diff                                   │
+│    → Check: unified format, non-empty, AC IDs cited              │
+│                                                                   │
+│  gptel-workflow--validate-tests                                  │
+│    → Check: non-empty, test paths touched                        │
+│                                                                   │
+│  gptel-workflow--validate-review                                 │
+│    → Check: bullets present, non-empty                           │
+│                                                                   │
+│  Human confirmation: yes-or-no-p on validation failure           │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    CONTEXT MANAGEMENT                            │
+├─────────────────────────────────────────────────────────────────┤
+│  Capture                                                         │
+│    ├─ region (active selection)                                 │
+│    ├─ defun (current function)                                  │
+│    └─ buffer (entire buffer)                                    │
+│                                                                   │
+│  Prune                                                           │
+│    ├─ Remove excessive whitespace                               │
+│    └─ Limit to 10,000 chars                                     │
+│                                                                   │
+│  Summarize (Optional)                                            │
+│    └─ Use fast-low preset for quick summarization               │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                       MODEL PRESETS                              │
+├─────────────────────────────────────────────────────────────────┤
+│  fast-low                                                        │
+│    Model: gpt-3.5-turbo                                          │
+│    Temperature: 0.3                                              │
+│    Max Tokens: 2000                                              │
+│    Use: Summarization                                            │
+│                                                                   │
+│  strong-medium                                                   │
+│    Model: gpt-4                                                  │
+│    Temperature: 0.7                                              │
+│    Max Tokens: 4000                                              │
+│    Use: Planning (creative)                                      │
+│                                                                   │
+│  strong-low                                                      │
+│    Model: gpt-4                                                  │
+│    Temperature: 0.3                                              │
+│    Max Tokens: 4000                                              │
+│    Use: Diff/Tests/Review (precise)                             │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    LLM INTEGRATION                               │
+├─────────────────────────────────────────────────────────────────┤
+│  gptel-request (from parent gptel package)                       │
+│    ├─ Prompt construction                                        │
+│    ├─ Async request handling                                     │
+│    ├─ Callback processing                                        │
+│    └─ Backend management                                         │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    OUTPUT & LOGGING                              │
+├─────────────────────────────────────────────────────────────────┤
+│  *gptel-workflow* (Output Buffer)                               │
+│    └─ Collated results from all steps                           │
+│                                                                   │
+│  *gptel-workflow-log* (Log Buffer)                              │
+│    └─ Timestamped log of steps/presets/validations              │
+└─────────────────────────────────────────────────────────────────┘
+
+
+                    Component Interaction Flow
+                    ==========================
+
+User Input → Transient UI → Workflow State → Step Runner →
+  Preset Selection → Prompt Building → gptel-request →
+    LLM Response → Validation Gate → Human Confirmation →
+      State Update → Output/Log → Next Step
+
+
+                         Data Flow
+                         =========
+
+      ACs (user input)
+           ↓
+    Tagged (AC1, AC2, ...)
+           ↓
+    Propagated to prompts
+           ↓
+    Cited in outputs
+           ↓
+    Validated in gates
+
+
+                    File Organization
+                    =================
+
+gptel-workflow.el              Core module (650+ lines)
+  ├─ State management
+  ├─ Preset definitions
+  ├─ Context operations
+  ├─ Validation gates
+  ├─ Step runners
+  └─ Public commands
+
+gptel-workflow-transient.el    UI menus (170+ lines)
+  ├─ Main menu
+  ├─ Step menu
+  └─ Helper commands
+
+gptel-workflow-test.el         Test suite (420+ lines)
+  └─ 33 ERT tests (100% passing)
+
+gptel-workflow-README.org      Documentation (300+ lines)
+  ├─ User guide
+  ├─ API reference
+  └─ Examples
+
+gptel-workflow-demo.el         Demos (160+ lines)
+  └─ 6 working examples
+
+SECURITY-SUMMARY.md            Security analysis
+IMPLEMENTATION-SUMMARY.md      Complete overview
+
+
+                      Total: ~1,900 lines
