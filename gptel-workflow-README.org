@@ -1,0 +1,325 @@
+#+title: gptel-workflow: Workflow Dispatcher for gptel
+
+* Overview
+
+=gptel-workflow= is a workflow dispatcher for gptel that orchestrates a chained LLM workflow through the following steps:
+
+1. *Plan* - Create an implementation plan
+2. *Diff* - Generate unified diffs
+3. *Tests* - Create unit tests (optionally integration tests)
+4. *Review* - Review the implementation
+5. *Checklist* - Generate a completion checklist
+
+* Features
+
+- *Model Presets*: Pre-configured model settings (fast-low, strong-medium, strong-low)
+- *Step-to-Preset Routing*: Automatic preset selection based on workflow step
+- *Context Management*: Capture, prune, and optionally summarize context
+- *Acceptance Criteria (AC) Handling*: Auto-tag ACs (AC1, AC2, ...) and propagate to prompts
+- *Validation Gates*: Pluggable validators with human confirmation
+- *Transient UX*: Interactive menus for workflow control
+- *Comprehensive Logging*: Track steps, presets, prompts, and validation results
+- *Retry Support*: Alternate presets for failed steps
+
+* Installation
+
+Add =gptel-workflow.el= and =gptel-workflow-transient.el= to your load path:
+
+#+begin_src emacs-lisp
+(require 'gptel-workflow)
+(require 'gptel-workflow-transient)
+#+end_src
+
+* Usage
+
+** Starting a Workflow
+
+Start a new workflow with:
+
+#+begin_src emacs-lisp
+M-x gptel-workflow-start
+#+end_src
+
+This will prompt you for:
+- Context source (region, defun, or buffer)
+- Acceptance criteria (separate multiple ACs with |)
+- Whether to run integration tests
+- Whether to summarize context before planning
+
+** Running Workflow Steps
+
+Execute individual workflow steps:
+
+#+begin_src emacs-lisp
+M-x gptel-workflow-run-plan           ; Generate implementation plan
+M-x gptel-workflow-run-diff           ; Generate unified diff
+M-x gptel-workflow-run-tests          ; Generate unit tests
+M-x gptel-workflow-run-tests-integration  ; Generate integration tests
+M-x gptel-workflow-run-review         ; Review implementation
+M-x gptel-workflow-run-checklist      ; Generate completion checklist
+#+end_src
+
+** Using the Transient Menu
+
+Access the main workflow menu:
+
+#+begin_src emacs-lisp
+M-x gptel-workflow-menu
+#+end_src
+
+The menu provides:
+- *Setup*: Start or reset workflow
+- *Steps*: Run individual workflow steps
+- *Utilities*: Retry, view output/logs
+
+** Viewing Output and Logs
+
+#+begin_src emacs-lisp
+M-x gptel-workflow-show-output    ; View workflow output buffer
+M-x gptel-workflow-show-log       ; View workflow log buffer
+#+end_src
+
+** Retrying Steps
+
+If a step fails validation, retry with an alternate preset:
+
+#+begin_src emacs-lisp
+M-x gptel-workflow-retry-step
+#+end_src
+
+** Resetting Workflow
+
+Reset the workflow state:
+
+#+begin_src emacs-lisp
+M-x gptel-workflow-reset
+#+end_src
+
+* Customization
+
+** Model Presets
+
+Customize the default model:
+
+#+begin_src emacs-lisp
+(setq gptel-workflow-default-model "gpt-4")
+#+end_src
+
+** Test Path Patterns
+
+Configure test file path patterns:
+
+#+begin_src emacs-lisp
+(setq gptel-workflow-test-path-globs
+      '("**/test/**" "**/tests/**" "**/*_test.*" "**/*-test.*"))
+
+(setq gptel-workflow-integration-test-paths
+      '("**/integration/**" "**/e2e/**"))
+#+end_src
+
+** Buffer Names
+
+Customize output and log buffer names:
+
+#+begin_src emacs-lisp
+(setq gptel-workflow-output-buffer-name "*my-workflow-output*")
+(setq gptel-workflow-log-buffer-name "*my-workflow-log*")
+#+end_src
+
+* Programmatic API
+
+** Creating Workflow State
+
+#+begin_src emacs-lisp
+(setq my-state
+      (gptel-workflow-state-create
+       :current-step 'plan
+       :acs '("Feature A" "Feature B")
+       :context "Initial context"
+       :integration-tests-flag t))
+#+end_src
+
+** Accessing State Fields
+
+#+begin_src emacs-lisp
+(gptel-workflow-state-current-step my-state)
+(gptel-workflow-state-acs my-state)
+(gptel-workflow-state-plan my-state)
+(setf (gptel-workflow-state-plan my-state) "New plan")
+#+end_src
+
+** Running Steps Programmatically
+
+#+begin_src emacs-lisp
+;; Set global state
+(setq gptel-workflow--current-state my-state)
+
+;; Run a step
+(gptel-workflow--run-step 'plan)
+
+;; Run with retry
+(gptel-workflow--run-step 'diff t)
+#+end_src
+
+** Validation
+
+#+begin_src emacs-lisp
+;; Validate plan
+(gptel-workflow--validate-plan plan-text tagged-acs)
+;; Returns (valid-p . message)
+
+;; Validate diff
+(gptel-workflow--validate-diff diff-text tagged-acs)
+
+;; Validate tests
+(gptel-workflow--validate-tests tests-text diff-text)
+
+;; Validate review
+(gptel-workflow--validate-review review-text)
+#+end_src
+
+** Context Management
+
+#+begin_src emacs-lisp
+;; Capture context
+(gptel-workflow--capture-context 'region)
+(gptel-workflow--capture-context 'defun)
+(gptel-workflow--capture-context 'buffer)
+
+;; Prune context
+(gptel-workflow--prune-context large-context)
+
+;; Summarize context
+(gptel-workflow--summarize-context context
+  (lambda (summary) (message "Summary: %s" summary)))
+#+end_src
+
+** AC Management
+
+#+begin_src emacs-lisp
+;; Tag ACs
+(setq tagged-acs
+      (gptel-workflow--tag-acs '("Feature A" "Feature B")))
+;; => ("AC1: Feature A" "AC2: Feature B")
+
+;; Format ACs for prompts
+(gptel-workflow--format-acs tagged-acs)
+#+end_src
+
+** Preset Management
+
+#+begin_src emacs-lisp
+;; Get preset configuration
+(gptel-workflow--get-preset 'fast-low)
+;; => (:model "gpt-3.5-turbo" :temperature 0.3 :max-tokens 2000)
+
+;; Get step preset
+(gptel-workflow--get-step-preset 'plan)
+;; => strong-medium
+#+end_src
+
+* Validation Gates
+
+Each workflow step has validation gates:
+
+** Plan Validation
+- Checks for bullet points
+- Verifies all AC IDs are cited
+
+** Diff Validation
+- Checks for unified diff format (---, +++, @@)
+- Verifies non-empty output
+- Verifies all AC IDs are cited
+
+** Tests Validation
+- Checks for non-empty output
+- If behavior changes (diff exists), verifies test paths are touched
+
+** Review Validation
+- Checks for bullet points
+- Verifies non-empty output
+
+* Testing
+
+Run the test suite:
+
+#+begin_src bash
+emacs --batch -L . -l gptel-workflow-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+Or interactively in Emacs:
+
+#+begin_src emacs-lisp
+(load-file "gptel-workflow-test.el")
+(ert t)
+#+end_src
+
+* Architecture
+
+** Workflow State
+The workflow maintains state in =gptel-workflow-state= structure with fields:
+- =current-step= - Current workflow step
+- =acs= - List of acceptance criteria
+- =acs-tagged= - Tagged ACs (AC1, AC2, ...)
+- =context= - Raw context
+- =context-summary= - Optional summarized context
+- =plan=, =diff=, =tests=, =review=, =checklist= - Step outputs
+- =continue= - Continue flag
+- =integration-tests-flag= - Run integration tests
+- =preset-overrides= - Step-specific preset overrides
+- =retry-count= - Retry attempts
+
+** Model Presets
+Three presets are defined:
+- *fast-low*: Fast model (gpt-3.5-turbo) with low temperature (0.3)
+- *strong-medium*: Strong model (gpt-4) with medium temperature (0.7)
+- *strong-low*: Strong model (gpt-4) with low temperature (0.3)
+
+** Default Step-to-Preset Mapping
+- =plan= → strong-medium
+- =diff= → strong-low
+- =tests= → strong-low
+- =tests-integration= → strong-low
+- =review= → strong-low
+- =checklist= → strong-low
+- =summary= → fast-low
+
+* Example Workflow
+
+#+begin_src emacs-lisp
+;; 1. Start workflow
+(gptel-workflow-start)
+;; Enter ACs: "Implement feature X | Add validation | Update docs"
+;; Context source: region
+
+;; 2. Run plan step
+(gptel-workflow-run-plan)
+;; Validates: bullets present, all ACs cited
+
+;; 3. Run diff step
+(gptel-workflow-run-diff)
+;; Validates: unified diff format, ACs cited
+
+;; 4. Run tests step
+(gptel-workflow-run-tests)
+;; Validates: test paths touched
+
+;; 5. Run review step
+(gptel-workflow-run-review)
+;; Validates: bullets present
+
+;; 6. Run checklist step
+(gptel-workflow-run-checklist)
+;; Generates final completion checklist
+
+;; 7. View output
+(gptel-workflow-show-output)
+#+end_src
+
+* License
+
+GPL-3.0-or-later
+
+* Author
+
+Part of the gptel package by Karthik Chikmagalur
