@@ -397,7 +397,7 @@
     (should (not (car result3)))
     (should (string-match-p "hunk headers" (cdr result3)))
     (should (not (car result4)))
-    (should (string-match-p "body lines" (cdr result4)))))
+    (should (string-match-p "+/- lines" (cdr result4)))))
 
 (ert-deftest gptel-workflow-test-glob-to-regex ()
   "Test glob pattern to regex conversion."
@@ -436,6 +436,112 @@
       (should (string-match-p "truncated" (buffer-string)))
       (should (string-match-p "15000" (buffer-string)))
       (should (string-match-p "10000" (buffer-string))))))
+
+;;; Enhanced Diff Validation Tests
+
+(ert-deftest gptel-workflow-test-diff-multi-hunk ()
+  "Test diff validation with multiple hunks."
+  (let* ((acs-tagged '("AC1: Feature A"))
+         ;; Valid multi-hunk diff
+         (multi-hunk "--- a/file1.txt
++++ b/file1.txt
+@@ -1,1 +1,1 @@
+-old line
++new line (AC1)
+--- a/file2.txt
++++ b/file2.txt
+@@ -1,1 +1,1 @@
+-old line 2
++new line 2")
+         (result (gptel-workflow--validate-diff multi-hunk acs-tagged)))
+    (should (car result))))
+
+(ert-deftest gptel-workflow-test-diff-headers-mid-string ()
+  "Test diff validation with headers not at start."
+  (let* ((acs-tagged '("AC1: Feature A"))
+         ;; Headers after some text - should still be valid
+         (headers-mid "Some preamble text
+--- a/file.txt
++++ b/file.txt
+@@ -1,1 +1,1 @@
+-old (AC1)
++new")
+         (result (gptel-workflow--validate-diff headers-mid acs-tagged)))
+    (should (car result))))
+
+(ert-deftest gptel-workflow-test-diff-only-context-lines ()
+  "Test diff validation rejects diffs with only context lines (no +/-)."
+  (let* ((acs-tagged '("AC1: Feature A"))
+         ;; Invalid - only context lines, no additions or deletions
+         (only-context "--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,3 @@
+ context line 1 (AC1)
+ context line 2
+ context line 3")
+         (result (gptel-workflow--validate-diff only-context acs-tagged)))
+    (should (not (car result)))
+    (should (string-match-p "+/- lines" (cdr result)))))
+
+(ert-deftest gptel-workflow-test-diff-only-additions ()
+  "Test diff validation rejects diffs with only additions (no deletions)."
+  (let* ((acs-tagged '("AC1: Feature A"))
+         ;; Invalid - only additions, no deletions
+         (only-additions "--- a/file.txt
++++ b/file.txt
+@@ -0,0 +1,2 @@
++new line 1 (AC1)
++new line 2")
+         (result (gptel-workflow--validate-diff only-additions acs-tagged)))
+    (should (not (car result)))
+    (should (string-match-p "+/- lines" (cdr result)))))
+
+(ert-deftest gptel-workflow-test-diff-only-deletions ()
+  "Test diff validation rejects diffs with only deletions (no additions)."
+  (let* ((acs-tagged '("AC1: Feature A"))
+         ;; Invalid - only deletions, no additions
+         (only-deletions "--- a/file.txt
++++ b/file.txt
+@@ -1,2 +0,0 @@
+-old line 1 (AC1)
+-old line 2")
+         (result (gptel-workflow--validate-diff only-deletions acs-tagged)))
+    (should (not (car result)))
+    (should (string-match-p "+/- lines" (cdr result)))))
+
+;;; Enhanced Test Path Validation Tests
+
+(ert-deftest gptel-workflow-test-path-validation-file-headers-only ()
+  "Test that test path validation only matches file headers, not content."
+  (let* ((diff "--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-old\n+new")
+         ;; Tests with test path in content but not in file headers - should fail
+         (tests-wrong-path "--- a/src/feature.py
++++ b/src/feature.py
+@@ -1,1 +1,1 @@
+-old
++new test/unit/something")
+         (result1 (gptel-workflow--validate-tests tests-wrong-path diff nil))
+         ;; Tests with test path in file headers - should pass
+         (tests-correct-path "--- a/test/unit/feature_test.py
++++ b/test/unit/feature_test.py
+@@ -1,1 +1,1 @@
+-old
++new")
+         (result2 (gptel-workflow--validate-tests tests-correct-path diff nil)))
+    (should (not (car result1)))
+    (should (car result2))))
+
+(ert-deftest gptel-workflow-test-glob-negative-cases ()
+  "Test glob conversion doesn't over-match."
+  (let ((regex-test (gptel-workflow--glob-to-regex "**/test/**"))
+        (regex-tests (gptel-workflow--glob-to-regex "**/tests/**")))
+    ;; Should not match paths without the pattern
+    (should (not (string-match-p regex-test "src/contest/file.py")))
+    (should (not (string-match-p regex-test "testing/file.py")))
+    (should (not (string-match-p regex-tests "src/test/file.py")))
+    ;; Should match correct paths
+    (should (string-match-p regex-test "src/test/unit.py"))
+    (should (string-match-p regex-tests "src/tests/unit.py"))))
 
 (provide 'gptel-workflow-test)
 ;;; gptel-workflow-test.el ends here

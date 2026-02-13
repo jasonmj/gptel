@@ -269,18 +269,31 @@ Returns (valid-p . message)."
   "Validate DIFF output against ACS-TAGGED.
 Returns (valid-p . message)."
   (let* ((is-empty (string-match-p "^[[:space:]]*$" diff))
-         ;; Check for proper unified diff structure
-         (has-file-header (and (string-match-p "^--- a/" diff)
-                              (string-match-p "^\\+\\+\\+ b/" diff)))
-         (has-hunk (string-match-p "^@@.*@@" diff))
-         ;; Check for actual diff content (lines starting with +, -, or space after @@)
          (lines (split-string diff "\n"))
-         (has-body (cl-some (lambda (line)
-                             (and (not (string-match-p "^---" line))
-                                  (not (string-match-p "^\\+\\+\\+" line))
-                                  (not (string-match-p "^@@" line))
-                                  (string-match-p "^[-+ ]" line)))
-                           lines))
+         ;; Check for proper unified diff structure using line-by-line analysis
+         (file-headers (cl-loop for line in lines
+                               when (string-match-p "^--- a/" line)
+                               collect line))
+         (file-headers-plus (cl-loop for line in lines
+                                    when (string-match-p "^\\+\\+\\+ b/" line)
+                                    collect line))
+         (has-file-header (and (>= (length file-headers) 1)
+                              (>= (length file-headers-plus) 1)))
+         ;; Count hunks - should have at least one
+         (hunk-count (cl-count-if (lambda (line)
+                                   (string-match-p "^@@.*@@" line))
+                                 lines))
+         (has-hunk (>= hunk-count 1))
+         ;; Check for actual diff content - require at least one + and one - line
+         (has-plus-line (cl-some (lambda (line)
+                                  (and (string-match-p "^\\+" line)
+                                       (not (string-match-p "^\\+\\+\\+" line))))
+                                lines))
+         (has-minus-line (cl-some (lambda (line)
+                                   (and (string-match-p "^-" line)
+                                        (not (string-match-p "^---" line))))
+                                 lines))
+         (has-body (and has-plus-line has-minus-line))
          (ac-count (length acs-tagged))
          (cited-acs (cl-loop for i from 1 to (length acs-tagged)
                             when (string-match-p (format "\\bAC%d\\b" i) diff)
@@ -293,46 +306,52 @@ Returns (valid-p . message)."
      ((not has-hunk)
       (cons nil "Diff is not in unified diff format (missing hunk headers)"))
      ((not has-body)
-      (cons nil "Diff is not in unified diff format (missing body lines)"))
+      (cons nil "Diff is not in unified diff format (missing +/- lines)"))
      ((< (length cited-acs) ac-count)
       (cons nil (format "Diff does not cite all ACs (cited %d of %d)"
                        (length cited-acs) ac-count)))
      (t (cons t "Diff validation passed")))))
 
 (defun gptel-workflow--glob-to-regex (glob)
-  "Convert a GLOB pattern to a regex pattern.
-Handles patterns like **/test/**, **/*_test.*, etc."
+  "Convert a GLOB pattern to a regex pattern for matching file paths.
+Handles patterns like **/test/**, **/*_test.*, etc.
+The pattern matches complete path components, not substrings."
   (let ((chars (string-to-list glob))
         (result "")
         (i 0))
     (while (< i (length chars))
       (let ((c (nth i chars)))
         (cond
-         ;; Handle **/
+         ;; Handle **/ - matches any path prefix including empty
+         ;; But the next component should be at a path boundary
          ((and (= c ?*) 
                (< (+ i 2) (length chars))
                (= (nth (+ i 1) chars) ?*)
                (= (nth (+ i 2) chars) ?/))
-          (setq result (concat result "\\(?:.*/\\)?"))
+          (setq result (concat result "\\(?:^\\|.*/\\)"))
           (setq i (+ i 3)))
-         ;; Handle /**
+         ;; Handle /** - matches any path suffix including empty  
          ((and (= c ?/)
                (< (+ i 2) (length chars))
                (= (nth (+ i 1) chars) ?*)
                (= (nth (+ i 2) chars) ?*))
-          (setq result (concat result "\\(?:/.*\\)?"))
+          (setq result (concat result "\\(?:/.*\\|$\\)"))
           (setq i (+ i 3)))
          ;; Handle single *
          ((= c ?*)
           (setq result (concat result "[^/]*"))
           (setq i (+ i 1)))
-         ;; Handle . - use single backslash in the string
+         ;; Handle . - escape it
          ((= c ?.)
           (setq result (concat result "\\."))
           (setq i (+ i 1)))
-         ;; Regular character
+         ;; Handle / - literal slash
+         ((= c ?/)
+          (setq result (concat result "/"))
+          (setq i (+ i 1)))
+         ;; Regular character - escape if needed
          (t
-          (setq result (concat result (char-to-string c)))
+          (setq result (concat result (regexp-quote (char-to-string c))))
           (setq i (+ i 1))))))
     result))
 
@@ -344,10 +363,19 @@ Returns (valid-p . message)."
          (path-globs (if integration-p
                         gptel-workflow-integration-test-paths
                       gptel-workflow-test-path-globs))
-         (has-test-paths (and tests
+         ;; Extract file paths from test diffs - look at file header lines only
+         (test-lines (split-string (or tests "") "\n"))
+         (test-paths (cl-loop for line in test-lines
+                             when (or (string-match "^\\+\\+\\+ b/\\(.+\\)" line)
+                                     (string-match "^--- a/\\(.+\\)" line))
+                             collect (match-string 1 line)))
+         ;; Check if any test path matches the globs
+         (has-test-paths (and test-paths
                              (cl-some (lambda (glob)
                                        (let ((regex (gptel-workflow--glob-to-regex glob)))
-                                         (string-match-p regex tests)))
+                                         (cl-some (lambda (path)
+                                                   (string-match-p regex path))
+                                                 test-paths)))
                                      path-globs)))
          (is-empty (or (not tests) (string-match-p "^[[:space:]]*$" tests))))
     (cond
