@@ -220,12 +220,12 @@ Validation: Diff validation passed
 
 ## Testing
 
-The package includes comprehensive ERT tests in `test/gptel-workflow-test.el`.
+The package includes comprehensive ERT tests in `tests/gptel-workflow-test.el`.
 
 ### Running Tests
 
 ```bash
-emacs --batch -L . -l test/gptel-workflow-test.el -f ert-run-tests-batch-and-exit
+emacs --batch -L . -l tests/gptel-workflow-test.el -f ert-run-tests-batch-and-exit
 ```
 
 Or from within Emacs:
@@ -322,7 +322,7 @@ Add custom validation for steps:
   - Per-step menu
   - Argument parsing
 
-- **test/gptel-workflow-test.el**: ERT test suite
+- **tests/gptel-workflow-test.el**: ERT test suite
   - Unit tests
   - Integration tests
   - Edge cases
