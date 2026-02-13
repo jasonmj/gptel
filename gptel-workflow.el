@@ -207,7 +207,10 @@ and limits the size."
       pruned)))
 
 (defun gptel-workflow--summarize-context (context callback)
-  "Summarize CONTEXT using fast-low preset and call CALLBACK with result."
+  "Summarize CONTEXT using fast-low preset and call CALLBACK with result.
+Note: The preset model/temperature/max-tokens are extracted but not
+passed to gptel-request as it uses the current gptel-backend settings.
+To use specific models, set gptel-backend and gptel-model before calling."
   (let* ((preset-name 'fast-low)
          (preset (gptel-workflow--get-preset preset-name))
          (model (plist-get preset :model))
@@ -215,7 +218,8 @@ and limits the size."
          (max-tokens (plist-get preset :max-tokens))
          (prompt (format "Summarize the following code/text concisely (max 500 words):\n\n%s"
                         context)))
-    (gptel-workflow--log "Summarizing context with preset %s" preset-name)
+    (gptel-workflow--log "Summarizing context with preset %s (model: %s, temp: %s, max-tokens: %s)"
+                        preset-name model temp max-tokens)
     (gptel-request
      prompt
      :callback
@@ -229,10 +233,13 @@ and limits the size."
 
 ;;; Validation Gates
 
+(defconst gptel-workflow--bullet-pattern "^[-*•]\\|^[0-9]+\\."
+  "Regex pattern for bullet points in workflow output.")
+
 (defun gptel-workflow--validate-plan (plan acs-tagged)
   "Validate PLAN output against ACS-TAGGED.
 Returns (valid-p . message)."
-  (let* ((has-bullets (string-match-p "^[-*•]\\|^[0-9]+\\." plan))
+  (let* ((has-bullets (string-match-p gptel-workflow--bullet-pattern plan))
          (ac-count (length acs-tagged))
          (cited-acs (cl-loop for i from 1 to (length acs-tagged)
                             when (string-match-p (format "AC%d" i) plan)
@@ -270,7 +277,12 @@ Returns (valid-p . message)."
   (let* ((is-diff (and diff (not (string-match-p "^[[:space:]]*$" diff))))
          (has-test-paths (and tests
                              (cl-some (lambda (glob)
-                                       (string-match-p (regexp-quote (substring glob 2 -2)) tests))
+                                       ;; Extract pattern from glob (handle different formats)
+                                       (let ((pattern (cond
+                                                      ((string-prefix-p "**/" glob)
+                                                       (substring glob 3))
+                                                      (t glob))))
+                                         (string-match-p (regexp-quote pattern) tests)))
                                      gptel-workflow-test-path-globs)))
          (is-empty (or (not tests) (string-match-p "^[[:space:]]*$" tests))))
     (cond
@@ -283,7 +295,7 @@ Returns (valid-p . message)."
 (defun gptel-workflow--validate-review (review)
   "Validate REVIEW output.
 Returns (valid-p . message)."
-  (let ((has-bullets (string-match-p "^[-*•]\\|^[0-9]+\\." review))
+  (let ((has-bullets (string-match-p gptel-workflow--bullet-pattern review))
         (is-empty (string-match-p "^[[:space:]]*$" review)))
     (cond
      (is-empty
@@ -354,7 +366,10 @@ Returns t if user confirms to proceed, nil otherwise."
       (_ (error "Unknown step: %s" step)))))
 
 (defun gptel-workflow--run-step (step &optional retry)
-  "Run workflow STEP. If RETRY is non-nil, use alternate preset."
+  "Run workflow STEP. If RETRY is non-nil, use alternate preset.
+Note: The preset model/temperature/max-tokens are extracted but not
+passed to gptel-request as it uses the current gptel-backend settings.
+To use specific models, set gptel-backend and gptel-model before calling."
   (unless gptel-workflow--current-state
     (error "No active workflow state. Run gptel-workflow-start first"))
   (let* ((state gptel-workflow--current-state)
@@ -365,12 +380,15 @@ Returns t if user confirms to proceed, nil otherwise."
                             ('strong-low 'strong-medium))
                         (gptel-workflow--get-step-preset step state)))
          (preset (gptel-workflow--get-preset preset-name))
+         (model (plist-get preset :model))
+         (temp (plist-get preset :temperature))
+         (max-tokens (plist-get preset :max-tokens))
          (prompt (gptel-workflow--build-prompt step state)))
     (setf (gptel-workflow-state-current-step state) step)
     (when retry
       (cl-incf (gptel-workflow-state-retry-count state)))
-    (gptel-workflow--log "Running step %s with preset %s (retry: %s)"
-                        step preset-name retry)
+    (gptel-workflow--log "Running step %s with preset %s (model: %s, temp: %s, max-tokens: %s, retry: %s)"
+                        step preset-name model temp max-tokens retry)
     (gptel-workflow--output "\n=== Step: %s (preset: %s) ===\n" step preset-name)
     (gptel-request
      prompt

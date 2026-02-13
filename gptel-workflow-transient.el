@@ -103,8 +103,12 @@
       (_ (message "Already at first step")))))
 
 (defun gptel-workflow-continue-to-next ()
-  "Continue to next step without validation."
+  "Continue to next step, proceeding even if validation fails."
   (interactive)
+  (unless gptel-workflow--current-state
+    (error "No active workflow state"))
+  ;; Set continue flag to bypass validation
+  (setf (gptel-workflow-state-continue gptel-workflow--current-state) t)
   (gptel-workflow-next-step))
 
 (defun gptel-workflow-edit-acs ()
