@@ -33,11 +33,21 @@
 ;; - Validation gates with human confirmation
 ;; - Transient/buffer UX integration
 ;; - Logging and observability
+;;
+;; Usage:
+;;
+;; Interactive: M-x gptel-workflow-menu
+;; Programmatic: (require 'gptel-workflow)
+;;               (gptel-workflow-start 'region '("AC1" "AC2") nil)
+;;               (gptel-workflow-run-all)
+;;
+;; See gptel-workflow-README.md for detailed documentation.
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'gptel)
+(eval-when-compile
+  (require 'gptel nil t))
 (require 'transient)
 
 ;;; Customization
@@ -331,90 +341,154 @@ and truncates very long lines."
                (gptel-workflow-state-plan state)
                "\n\nProvide a markdown checklist of verification steps.")))))
 
-(defun gptel-workflow--execute-step (step)
-  "Execute workflow STEP and return output."
-  ;; This is a simplified synchronous version for testing
-  ;; A full implementation would use gptel-request with callbacks
+(defun gptel-workflow--get-preset-config (preset)
+  "Get configuration for PRESET."
+  (alist-get preset gptel-workflow-presets))
+
+(defun gptel-workflow--execute-step (step callback)
+  "Execute workflow STEP and call CALLBACK with output.
+If gptel is available, uses gptel-request, otherwise returns mock output."
   (let* ((preset (alist-get step gptel-workflow-step-preset-map))
-         (prompt (gptel-workflow--build-prompt step))
-         (output (format "[Mock output for %s step]\n%s" step prompt)))
+         (preset-config (gptel-workflow--get-preset-config preset))
+         (prompt (gptel-workflow--build-prompt step)))
     (gptel-workflow--log step preset "default")
-    output))
+    
+    ;; Check if gptel-request is available (full gptel loaded)
+    (if (fboundp 'gptel-request)
+        ;; Use real gptel-request
+        (let ((model (plist-get preset-config :model))
+              (temperature (plist-get preset-config :temperature))
+              (max-tokens (plist-get preset-config :max-tokens)))
+          (gptel-request
+           prompt
+           :callback (lambda (response info)
+                       (if (stringp response)
+                           (progn
+                             (gptel-workflow--log step preset "default" "success")
+                             (funcall callback response))
+                         (progn
+                           (gptel-workflow--log step preset "default"
+                                               (format "error: %s" (plist-get info :status)))
+                           (funcall callback nil))))
+           :system "You are a helpful coding assistant."))
+      ;; Fallback to mock output for testing
+      (let ((output (format "[Mock output for %s step]\n%s" step prompt)))
+        (funcall callback output)))))
 
 ;;; Step Runners
 
 ;;;###autoload
-(defun gptel-workflow-run-plan ()
-  "Run the plan workflow step."
+(defun gptel-workflow-run-plan (&optional callback)
+  "Run the plan workflow step.
+Optional CALLBACK is called with validation result when complete."
   (interactive)
   (unless gptel-workflow--current-state
     (error "No active workflow state"))
-  (let* ((output (gptel-workflow--execute-step 'plan))
-         (validation (gptel-workflow--validate-output 'plan output)))
-    (setf (gptel-workflow-state-plan gptel-workflow--current-state) output)
-    (setf (gptel-workflow-state-current-step gptel-workflow--current-state) 'plan)
-    (gptel-workflow--display-output "Plan" output validation)
-    validation))
+  (message "Generating plan...")
+  (gptel-workflow--execute-step
+   'plan
+   (lambda (output)
+     (if output
+         (let ((validation (gptel-workflow--validate-output 'plan output)))
+           (setf (gptel-workflow-state-plan gptel-workflow--current-state) output)
+           (setf (gptel-workflow-state-current-step gptel-workflow--current-state) 'plan)
+           (gptel-workflow--display-output "Plan" output validation)
+           (message "Plan complete: %s" (plist-get validation :message))
+           (when callback (funcall callback validation)))
+       (message "Plan generation failed")
+       (when callback (funcall callback nil))))))
 
 ;;;###autoload
-(defun gptel-workflow-run-diff ()
-  "Run the diff workflow step."
+(defun gptel-workflow-run-diff (&optional callback)
+  "Run the diff workflow step.
+Optional CALLBACK is called with validation result when complete."
   (interactive)
   (unless gptel-workflow--current-state
     (error "No active workflow state"))
   (unless (gptel-workflow-state-plan gptel-workflow--current-state)
     (error "Plan step must be completed first"))
-  (let* ((output (gptel-workflow--execute-step 'diff))
-         (validation (gptel-workflow--validate-output 'diff output)))
-    (setf (gptel-workflow-state-diff gptel-workflow--current-state) output)
-    (setf (gptel-workflow-state-current-step gptel-workflow--current-state) 'diff)
-    (gptel-workflow--display-output "Diff" output validation)
-    validation))
+  (message "Generating diff...")
+  (gptel-workflow--execute-step
+   'diff
+   (lambda (output)
+     (if output
+         (let ((validation (gptel-workflow--validate-output 'diff output)))
+           (setf (gptel-workflow-state-diff gptel-workflow--current-state) output)
+           (setf (gptel-workflow-state-current-step gptel-workflow--current-state) 'diff)
+           (gptel-workflow--display-output "Diff" output validation)
+           (message "Diff complete: %s" (plist-get validation :message))
+           (when callback (funcall callback validation)))
+       (message "Diff generation failed")
+       (when callback (funcall callback nil))))))
 
 ;;;###autoload
-(defun gptel-workflow-run-tests ()
-  "Run the tests workflow step."
+(defun gptel-workflow-run-tests (&optional callback)
+  "Run the tests workflow step.
+Optional CALLBACK is called with validation result when complete."
   (interactive)
   (unless gptel-workflow--current-state
     (error "No active workflow state"))
   (unless (gptel-workflow-state-diff gptel-workflow--current-state)
     (error "Diff step must be completed first"))
-  (let* ((step (if (gptel-workflow-state-integration-tests-p gptel-workflow--current-state)
-                   'tests-integration
-                 'tests))
-         (output (gptel-workflow--execute-step step))
-         (validation (gptel-workflow--validate-output step output)))
-    (setf (gptel-workflow-state-tests gptel-workflow--current-state) output)
-    (setf (gptel-workflow-state-current-step gptel-workflow--current-state) step)
-    (gptel-workflow--display-output "Tests" output validation)
-    validation))
+  (let ((step (if (gptel-workflow-state-integration-tests-p gptel-workflow--current-state)
+                  'tests-integration
+                'tests)))
+    (message "Generating tests...")
+    (gptel-workflow--execute-step
+     step
+     (lambda (output)
+       (if output
+           (let ((validation (gptel-workflow--validate-output step output)))
+             (setf (gptel-workflow-state-tests gptel-workflow--current-state) output)
+             (setf (gptel-workflow-state-current-step gptel-workflow--current-state) step)
+             (gptel-workflow--display-output "Tests" output validation)
+             (message "Tests complete: %s" (plist-get validation :message))
+             (when callback (funcall callback validation)))
+         (message "Test generation failed")
+         (when callback (funcall callback nil)))))))
 
 ;;;###autoload
-(defun gptel-workflow-run-review ()
-  "Run the review workflow step."
+(defun gptel-workflow-run-review (&optional callback)
+  "Run the review workflow step.
+Optional CALLBACK is called with validation result when complete."
   (interactive)
   (unless gptel-workflow--current-state
     (error "No active workflow state"))
   (unless (gptel-workflow-state-tests gptel-workflow--current-state)
     (error "Tests step must be completed first"))
-  (let* ((output (gptel-workflow--execute-step 'review))
-         (validation (gptel-workflow--validate-output 'review output)))
-    (setf (gptel-workflow-state-review gptel-workflow--current-state) output)
-    (setf (gptel-workflow-state-current-step gptel-workflow--current-state) 'review)
-    (gptel-workflow--display-output "Review" output validation)
-    validation))
+  (message "Generating review...")
+  (gptel-workflow--execute-step
+   'review
+   (lambda (output)
+     (if output
+         (let ((validation (gptel-workflow--validate-output 'review output)))
+           (setf (gptel-workflow-state-review gptel-workflow--current-state) output)
+           (setf (gptel-workflow-state-current-step gptel-workflow--current-state) 'review)
+           (gptel-workflow--display-output "Review" output validation)
+           (message "Review complete: %s" (plist-get validation :message))
+           (when callback (funcall callback validation)))
+       (message "Review generation failed")
+       (when callback (funcall callback nil))))))
 
 ;;;###autoload
-(defun gptel-workflow-run-checklist ()
-  "Run the checklist workflow step."
+(defun gptel-workflow-run-checklist (&optional callback)
+  "Run the checklist workflow step.
+Optional CALLBACK is called with validation result when complete."
   (interactive)
   (unless gptel-workflow--current-state
     (error "No active workflow state"))
-  (let* ((output (gptel-workflow--execute-step 'checklist))
-         (validation (list :valid t :message "Checklist generated")))
-    (setf (gptel-workflow-state-current-step gptel-workflow--current-state) 'checklist)
-    (gptel-workflow--display-output "Checklist" output validation)
-    validation))
+  (message "Generating checklist...")
+  (gptel-workflow--execute-step
+   'checklist
+   (lambda (output)
+     (if output
+         (let ((validation (list :valid t :message "Checklist generated")))
+           (setf (gptel-workflow-state-current-step gptel-workflow--current-state) 'checklist)
+           (gptel-workflow--display-output "Checklist" output validation)
+           (message "Checklist complete")
+           (when callback (funcall callback validation)))
+       (message "Checklist generation failed")
+       (when callback (funcall callback nil))))))
 
 ;;; Output Display
 
@@ -465,12 +539,18 @@ INTEGRATION-TESTS-P toggles integration test generation."
   (interactive)
   (unless gptel-workflow--current-state
     (error "No active workflow state"))
-  (gptel-workflow-run-plan)
-  (gptel-workflow-run-diff)
-  (gptel-workflow-run-tests)
-  (gptel-workflow-run-review)
-  (gptel-workflow-run-checklist)
-  (message "Workflow completed"))
+  (message "Starting workflow...")
+  (gptel-workflow-run-plan
+   (lambda (_validation)
+     (gptel-workflow-run-diff
+      (lambda (_validation)
+        (gptel-workflow-run-tests
+         (lambda (_validation)
+           (gptel-workflow-run-review
+            (lambda (_validation)
+              (gptel-workflow-run-checklist
+               (lambda (_validation)
+                 (message "Workflow completed"))))))))))))
 
 ;;;###autoload
 (defun gptel-workflow-retry-step ()
@@ -488,8 +568,7 @@ INTEGRATION-TESTS-P toggles integration test generation."
     (pcase step
       ('plan (gptel-workflow-run-plan))
       ('diff (gptel-workflow-run-diff))
-      ('tests (gptel-workflow-run-tests))
-      ('tests-integration (gptel-workflow-run-tests))
+      ((or 'tests 'tests-integration) (gptel-workflow-run-tests))
       ('review (gptel-workflow-run-review))
       ('checklist (gptel-workflow-run-checklist)))))
 
