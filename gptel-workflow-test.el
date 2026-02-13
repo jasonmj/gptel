@@ -349,5 +349,93 @@
           "- [ ] Unit tests pass\n- [ ] Code reviewed")
     (should (gptel-workflow-state-checklist state))))
 
+;;; Enhanced Validation Tests
+
+(ert-deftest gptel-workflow-test-multiline-bullets ()
+  "Test multiline bullet validation."
+  (let* ((acs-tagged '("AC1: Feature A"))
+         ;; Valid multiline with bullets
+         (valid-plan "Some intro\n- First bullet (AC1)\n- Second bullet\n\nConclusion")
+         (result1 (gptel-workflow--validate-plan valid-plan acs-tagged))
+         ;; Invalid multiline with bullets only on first line
+         (invalid-plan "- Only first line has bullet\nSecond line no bullet\nThird line no bullet")
+         (result2 (gptel-workflow--validate-plan invalid-plan '())))
+    (should (car result1))
+    ;; Still valid even if not all lines have bullets, as long as some do
+    (should (gptel-workflow--has-bullets-p invalid-plan))))
+
+(ert-deftest gptel-workflow-test-ac-word-boundaries ()
+  "Test AC citation with word boundaries."
+  (let* ((acs-tagged '("AC1: Feature A" "AC2: Feature B"))
+         ;; Valid - proper AC citations with bullets
+         (valid "- Implement AC1\n- Also AC2")
+         (result1 (gptel-workflow--validate-plan valid acs-tagged))
+         ;; Invalid - partial match (AC11 should not match AC1)
+         (invalid "- Implement AC11 only")
+         (result2 (gptel-workflow--validate-plan invalid '("AC1: Feature A"))))
+    (should (car result1))
+    (should (not (car result2)))))
+
+(ert-deftest gptel-workflow-test-diff-structure ()
+  "Test improved diff validation requiring full structure."
+  (let* ((acs-tagged '("AC1: Feature A"))
+         ;; Valid unified diff
+         (valid-diff "--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n-old line\n+new line (AC1)")
+         (result1 (gptel-workflow--validate-diff valid-diff acs-tagged))
+         ;; Invalid - missing file headers
+         (invalid-diff1 "@@ -1,2 +1,2 @@\n-old\n+new (AC1)")
+         (result2 (gptel-workflow--validate-diff invalid-diff1 acs-tagged))
+         ;; Invalid - missing hunk
+         (invalid-diff2 "--- a/file.txt\n+++ b/file.txt\n-old (AC1)\n+new")
+         (result3 (gptel-workflow--validate-diff invalid-diff2 acs-tagged))
+         ;; Invalid - missing body
+         (invalid-diff3 "--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@ (AC1)")
+         (result4 (gptel-workflow--validate-diff invalid-diff3 acs-tagged)))
+    (should (car result1))
+    (should (not (car result2)))
+    (should (string-match-p "file headers" (cdr result2)))
+    (should (not (car result3)))
+    (should (string-match-p "hunk headers" (cdr result3)))
+    (should (not (car result4)))
+    (should (string-match-p "body lines" (cdr result4)))))
+
+(ert-deftest gptel-workflow-test-glob-to-regex ()
+  "Test glob pattern to regex conversion."
+  (let ((regex1 (gptel-workflow--glob-to-regex "**/test/**"))
+        (regex2 (gptel-workflow--glob-to-regex "**/*_test.*"))
+        (regex3 (gptel-workflow--glob-to-regex "**/tests/**")))
+    ;; Should match paths with /test/ in them
+    (should (string-match-p regex1 "src/test/unit/feature.py"))
+    (should (string-match-p regex1 "test/file.txt"))
+    ;; Should match files ending with _test.
+    (should (string-match-p regex2 "file_test.py"))
+    (should (string-match-p regex2 "src/feature_test.js"))
+    ;; Should match paths with /tests/ in them
+    (should (string-match-p regex3 "src/tests/unit.py"))))
+
+(ert-deftest gptel-workflow-test-integration-validation ()
+  "Test integration test validation uses correct patterns."
+  (let* ((diff "--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-old\n+new")
+         ;; Unit test with unit path
+         (unit-tests "--- a/test/unit/feature_test.py\n+++ b/test/unit/feature_test.py")
+         (result1 (gptel-workflow--validate-tests unit-tests diff nil))
+         ;; Integration test with integration path
+         (integration-tests "--- a/test/integration/api_test.py\n+++ b/test/integration/api_test.py")
+         (result2 (gptel-workflow--validate-tests integration-tests diff t)))
+    (should (car result1))
+    (should (car result2))))
+
+(ert-deftest gptel-workflow-test-context-truncation-logged ()
+  "Test that context truncation is logged."
+  (let* ((large-context (make-string 15000 ?x))
+         (log-buffer (get-buffer-create gptel-workflow-log-buffer-name)))
+    (with-current-buffer log-buffer
+      (erase-buffer))
+    (gptel-workflow--prune-context large-context)
+    (with-current-buffer log-buffer
+      (should (string-match-p "truncated" (buffer-string)))
+      (should (string-match-p "15000" (buffer-string)))
+      (should (string-match-p "10000" (buffer-string))))))
+
 (provide 'gptel-workflow-test)
 ;;; gptel-workflow-test.el ends here

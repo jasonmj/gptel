@@ -203,7 +203,10 @@ and limits the size."
          (pruned (replace-regexp-in-string "\n\n\n+" "\n\n" pruned))
          (max-size 10000))
     (if (> (length pruned) max-size)
-        (substring pruned 0 max-size)
+        (progn
+          (gptel-workflow--log "Context truncated from %d to %d characters"
+                              (length pruned) max-size)
+          (substring pruned 0 max-size))
       pruned)))
 
 (defun gptel-workflow--summarize-context (context callback)
@@ -236,13 +239,23 @@ To use specific models, set gptel-backend and gptel-model before calling."
 (defconst gptel-workflow--bullet-pattern "^[-*•]\\|^[0-9]+\\."
   "Regex pattern for bullet points in workflow output.")
 
+(defun gptel-workflow--has-bullets-p (text)
+  "Check if TEXT has bullet points on non-blank lines.
+Returns t if at least one non-blank line starts with a bullet."
+  (let ((lines (split-string text "\n"))
+        (found nil))
+    (dolist (line lines found)
+      (when (and (not (string-match-p "^[[:space:]]*$" line))
+                 (string-match-p gptel-workflow--bullet-pattern line))
+        (setq found t)))))
+
 (defun gptel-workflow--validate-plan (plan acs-tagged)
   "Validate PLAN output against ACS-TAGGED.
 Returns (valid-p . message)."
-  (let* ((has-bullets (string-match-p gptel-workflow--bullet-pattern plan))
+  (let* ((has-bullets (gptel-workflow--has-bullets-p plan))
          (ac-count (length acs-tagged))
          (cited-acs (cl-loop for i from 1 to (length acs-tagged)
-                            when (string-match-p (format "AC%d" i) plan)
+                            when (string-match-p (format "\\bAC%d\\b" i) plan)
                             collect i)))
     (cond
      ((not has-bullets)
@@ -255,47 +268,100 @@ Returns (valid-p . message)."
 (defun gptel-workflow--validate-diff (diff acs-tagged)
   "Validate DIFF output against ACS-TAGGED.
 Returns (valid-p . message)."
-  (let* ((is-unified-diff (string-match-p "^\\(---\\|\\+\\+\\+\\|@@\\)" diff))
-         (is-empty (string-match-p "^[[:space:]]*$" diff))
+  (let* ((is-empty (string-match-p "^[[:space:]]*$" diff))
+         ;; Check for proper unified diff structure
+         (has-file-header (and (string-match-p "^--- a/" diff)
+                              (string-match-p "^\\+\\+\\+ b/" diff)))
+         (has-hunk (string-match-p "^@@.*@@" diff))
+         ;; Check for actual diff content (lines starting with +, -, or space after @@)
+         (lines (split-string diff "\n"))
+         (has-body (cl-some (lambda (line)
+                             (and (not (string-match-p "^---" line))
+                                  (not (string-match-p "^\\+\\+\\+" line))
+                                  (not (string-match-p "^@@" line))
+                                  (string-match-p "^[-+ ]" line)))
+                           lines))
          (ac-count (length acs-tagged))
          (cited-acs (cl-loop for i from 1 to (length acs-tagged)
-                            when (string-match-p (format "AC%d" i) diff)
+                            when (string-match-p (format "\\bAC%d\\b" i) diff)
                             collect i)))
     (cond
      (is-empty
       (cons nil "Diff is empty"))
-     ((not is-unified-diff)
-      (cons nil "Diff is not in unified diff format"))
+     ((not has-file-header)
+      (cons nil "Diff is not in unified diff format (missing file headers)"))
+     ((not has-hunk)
+      (cons nil "Diff is not in unified diff format (missing hunk headers)"))
+     ((not has-body)
+      (cons nil "Diff is not in unified diff format (missing body lines)"))
      ((< (length cited-acs) ac-count)
       (cons nil (format "Diff does not cite all ACs (cited %d of %d)"
                        (length cited-acs) ac-count)))
      (t (cons t "Diff validation passed")))))
 
-(defun gptel-workflow--validate-tests (tests diff)
+(defun gptel-workflow--glob-to-regex (glob)
+  "Convert a GLOB pattern to a regex pattern.
+Handles patterns like **/test/**, **/*_test.*, etc."
+  (let ((chars (string-to-list glob))
+        (result "")
+        (i 0))
+    (while (< i (length chars))
+      (let ((c (nth i chars)))
+        (cond
+         ;; Handle **/
+         ((and (= c ?*) 
+               (< (+ i 2) (length chars))
+               (= (nth (+ i 1) chars) ?*)
+               (= (nth (+ i 2) chars) ?/))
+          (setq result (concat result "\\(?:.*/\\)?"))
+          (setq i (+ i 3)))
+         ;; Handle /**
+         ((and (= c ?/)
+               (< (+ i 2) (length chars))
+               (= (nth (+ i 1) chars) ?*)
+               (= (nth (+ i 2) chars) ?*))
+          (setq result (concat result "\\(?:/.*\\)?"))
+          (setq i (+ i 3)))
+         ;; Handle single *
+         ((= c ?*)
+          (setq result (concat result "[^/]*"))
+          (setq i (+ i 1)))
+         ;; Handle . - use single backslash in the string
+         ((= c ?.)
+          (setq result (concat result "\\."))
+          (setq i (+ i 1)))
+         ;; Regular character
+         (t
+          (setq result (concat result (char-to-string c)))
+          (setq i (+ i 1))))))
+    result))
+
+(defun gptel-workflow--validate-tests (tests diff &optional integration-p)
   "Validate TESTS output against DIFF.
+If INTEGRATION-P is non-nil, use integration test path patterns.
 Returns (valid-p . message)."
   (let* ((is-diff (and diff (not (string-match-p "^[[:space:]]*$" diff))))
+         (path-globs (if integration-p
+                        gptel-workflow-integration-test-paths
+                      gptel-workflow-test-path-globs))
          (has-test-paths (and tests
                              (cl-some (lambda (glob)
-                                       ;; Extract pattern from glob (handle different formats)
-                                       (let ((pattern (cond
-                                                      ((string-prefix-p "**/" glob)
-                                                       (substring glob 3))
-                                                      (t glob))))
-                                         (string-match-p (regexp-quote pattern) tests)))
-                                     gptel-workflow-test-path-globs)))
+                                       (let ((regex (gptel-workflow--glob-to-regex glob)))
+                                         (string-match-p regex tests)))
+                                     path-globs)))
          (is-empty (or (not tests) (string-match-p "^[[:space:]]*$" tests))))
     (cond
      (is-empty
       (cons nil "Tests output is empty"))
      ((and is-diff (not has-test-paths))
-      (cons nil "Tests do not touch expected test paths when behavior changes"))
+      (cons nil (format "Tests do not touch expected %s test paths when behavior changes"
+                       (if integration-p "integration" "unit"))))
      (t (cons t "Tests validation passed")))))
 
 (defun gptel-workflow--validate-review (review)
   "Validate REVIEW output.
 Returns (valid-p . message)."
-  (let ((has-bullets (string-match-p gptel-workflow--bullet-pattern review))
+  (let ((has-bullets (gptel-workflow--has-bullets-p review))
         (is-empty (string-match-p "^[[:space:]]*$" review)))
     (cond
      (is-empty
@@ -365,6 +431,20 @@ Returns t if user confirms to proceed, nil otherwise."
                "\n\nProvide a markdown checklist of completion criteria."))
       (_ (error "Unknown step: %s" step)))))
 
+(defun gptel-workflow--check-preset-mismatch (preset-name preset)
+  "Check if PRESET-NAME's configuration matches current gptel settings.
+Log a warning if there's a mismatch."
+  (require 'gptel-request)
+  (when (boundp 'gptel-model)
+    (let* ((preset-model (plist-get preset :model))
+           (current-model (if (symbolp gptel-model)
+                             (symbol-name gptel-model)
+                           gptel-model)))
+      (when (and preset-model current-model
+                (not (string-match-p preset-model current-model)))
+        (gptel-workflow--log "WARNING: Preset %s specifies model '%s' but current gptel-model is '%s'. Set gptel-model to use the preset's model."
+                            preset-name preset-model current-model)))))
+
 (defun gptel-workflow--run-step (step &optional retry)
   "Run workflow STEP. If RETRY is non-nil, use alternate preset.
 Note: The preset model/temperature/max-tokens are extracted but not
@@ -387,6 +467,8 @@ To use specific models, set gptel-backend and gptel-model before calling."
     (setf (gptel-workflow-state-current-step state) step)
     (when retry
       (cl-incf (gptel-workflow-state-retry-count state)))
+    ;; Check for preset mismatch
+    (gptel-workflow--check-preset-mismatch preset-name preset)
     (gptel-workflow--log "Running step %s with preset %s (model: %s, temp: %s, max-tokens: %s, retry: %s)"
                         step preset-name model temp max-tokens retry)
     (gptel-workflow--output "\n=== Step: %s (preset: %s) ===\n" step preset-name)
@@ -424,14 +506,16 @@ To use specific models, set gptel-backend and gptel-model before calling."
        (setf (gptel-workflow-state-tests state) response)
        (let ((validation (gptel-workflow--validate-tests
                          response
-                         (gptel-workflow-state-diff state))))
+                         (gptel-workflow-state-diff state)
+                         nil))) ; unit tests
          (when (gptel-workflow--confirm-validation validation step)
            (message "Tests step completed. Run gptel-workflow-run-review next."))))
       ('tests-integration
        (setf (gptel-workflow-state-tests-integration state) response)
        (let ((validation (gptel-workflow--validate-tests
                          response
-                         (gptel-workflow-state-diff state))))
+                         (gptel-workflow-state-diff state)
+                         t))) ; integration tests
          (when (gptel-workflow--confirm-validation validation step)
            (message "Integration tests step completed."))))
       ('review
