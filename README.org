@@ -55,6 +55,7 @@ See also [[https://youtu.be/g1VMGhC5gRU][this youtube demo (2 minutes)]] by Armi
 - Supports introspection, so you can see /exactly/ what will be sent.  Inspect and modify queries before sending them.
 - Pause multi-stage requests at an intermediate stage and resume them later.
 - Don't like gptel's workflow? Use it to create your own for any supported model/backend with a [[https://github.com/karthink/gptel/wiki/Defining-custom-gptel-commands][simple API]].
+- *NEW*: =gptel-workflow= provides a standalone workflow dispatcher for orchestrating chained, validated LLM workflows (plan → diff → tests → review → checklist) with acceptance criteria tracking, validation gates, and transient UI.  See [[file:gptel-workflow-README.md][gptel-workflow documentation]].
 
 gptel uses Curl if available, but falls back to the built-in url-retrieve to work without external dependencies.
 
